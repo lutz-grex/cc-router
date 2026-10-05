@@ -225,12 +225,18 @@ function refreshErrorCode(payload: unknown, depth = 0): string | undefined {
 }
 
 function rejectIsPermanent(status: number, payload: unknown): boolean {
-  if (status !== 400 && status !== 401) return false;
+  // The token endpoint answers 401 only when it rejects the refresh token
+  // itself (a revoked one comes back as `invalid_refresh_token`). Whatever the
+  // code, that needs re-auth, so it quarantines; a later successful refresh
+  // still lifts the quarantine on its own.
+  if (status === 401) return true;
+  if (status !== 400) return false;
   const code = refreshErrorCode(payload);
   // `token_expired` is the code the real endpoint returns for a refresh token it
   // can no longer validate; like the OAuth2-standard codes it means re-auth, not
   // a retriable blip, so it must quarantine rather than cooldown-loop forever.
-  return code === "invalid_grant" || code === "invalid_token" || code === "token_revoked" || code === "token_expired";
+  return code === "invalid_grant" || code === "invalid_token" || code === "token_revoked"
+    || code === "token_expired" || code === "invalid_refresh_token";
 }
 
 function markRefreshFailure(account: OpenAISubscriptionAccount, permanent: boolean): void {
