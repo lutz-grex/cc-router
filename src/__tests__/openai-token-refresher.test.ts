@@ -216,6 +216,51 @@ describe("OpenAI subscription token refresher", () => {
     expect(account.authFailure).toBe("permanent");
   });
 
+  it("quarantines a revoked refresh token the endpoint rejects as invalid_refresh_token", async () => {
+    const account = createOpenAIAccount({
+      id: "openai-revoked-live", provider: "openai_subscription", accessToken: "still-unexpired",
+      refreshToken: "revoked", expiresAt: Date.now() + 60_000, enabled: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(Response.json({
+      error: {
+        message: "Could not validate your refresh token. Please try signing in again.",
+        type: "invalid_request_error", param: null, code: "invalid_refresh_token",
+      },
+    }, { status: 401 }));
+
+    expect(await refreshOpenAISubscriptionToken(account)).toBe(false);
+    expect(account.authState).toBe("quarantined");
+    expect(account.authFailure).toBe("permanent");
+    expect(() => new OpenAITokenPool([account]).acquireBest(new Map())).toThrow(NoEligibleAccountError);
+  });
+
+  it("quarantines any 401 from the token endpoint, even with an unknown code", async () => {
+    const account = createOpenAIAccount({
+      id: "openai-unknown-401", provider: "openai_subscription", accessToken: "access",
+      refreshToken: "refresh", expiresAt: Date.now() + 60_000, enabled: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      Response.json({ error: { type: "invalid_request_error", code: "something_new" } }, { status: 401 }),
+    );
+
+    expect(await refreshOpenAISubscriptionToken(account)).toBe(false);
+    expect(account.authState).toBe("quarantined");
+  });
+
+  it("keeps a 400 with a non-auth code transient", async () => {
+    const account = createOpenAIAccount({
+      id: "openai-bad-request", provider: "openai_subscription", accessToken: "access",
+      refreshToken: "refresh", expiresAt: Date.now() + 60_000, enabled: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      Response.json({ error: { type: "invalid_request_error", code: "missing_required_parameter" } }, { status: 400 }),
+    );
+
+    expect(await refreshOpenAISubscriptionToken(account)).toBe(false);
+    expect(account.authState).toBe("ok");
+    expect(account.authFailure).toBe("transient");
+  });
+
   it("bounds the whole OAuth response body and releases the shared refresh lock", async () => {
     vi.useFakeTimers();
     const account = createOpenAIAccount({
